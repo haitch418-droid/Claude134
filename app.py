@@ -12,8 +12,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-from tennis_ev import backtest, data, demo, scanner
-from tennis_ev.betfair import ENDPOINTS, BetfairClient, BetfairError
+from tennis_ev import backtest, daily, data, demo, scanner
+from tennis_ev.betfair import ENDPOINTS, BetfairClient
 from tennis_ev.model import FEATURE_LABELS, FEATURES, RatingModel
 
 st.set_page_config(page_title="Tennis EV+ Finder", page_icon="🎾", layout="wide")
@@ -43,6 +43,15 @@ ss.setdefault("matches", None)
 ss.setdefault("schedule", None)
 ss.setdefault("sources", [])
 ss.setdefault("aliases", {})
+
+if ss.matches is None and not ss.get("data_dir_checked"):
+    ss.data_dir_checked = True
+    try:
+        _m, _src = daily.load_results_folder()
+        if len(_m):
+            ss.matches, ss.sources = _m, [f"data/ {s}" for s in _src]
+    except Exception as e:  # noqa: BLE001
+        st.toast(f"Could not read data/ folder: {e}")
 
 
 @st.cache_resource(show_spinner="Building ratings from match history…")
@@ -109,7 +118,8 @@ model = build_model(ss.matches) if ss.matches is not None and len(ss.matches) el
 # --------------------------------------------------------------------- data
 with tab_data:
     st.header("Historical results")
-    st.write("Upload your **30-, 90- and 365-day** results files (CSV or Excel). "
+    st.write("Upload your **30-, 90- and 365-day** results files (CSV or Excel), or drop them in the "
+             "project's `data/` folder so they load automatically every time the app opens. "
              "Overlapping matches between files are removed automatically. "
              "The tennis-data.co.uk layout works as-is; any file with `Date`, `Winner`, `Loser` "
              "columns works (ranks, surface and odds columns are used when present).")
@@ -190,33 +200,75 @@ with tab_sched:
                       horizontal=True)
 
     if source.startswith("Betfair"):
-        with st.form("bf"):
-            c1, c2 = st.columns(2)
-            app_key = c1.text_input("App key", value=secret("BETFAIR_APP_KEY"), type="password")
-            region = c2.selectbox("Region", list(ENDPOINTS))
-            c1, c2 = st.columns(2)
-            user = c1.text_input("Username", value=secret("BETFAIR_USERNAME"))
-            pwd = c2.text_input("Password", value=secret("BETFAIR_PASSWORD"), type="password")
-            token = st.text_input("…or existing session token (skips login)", type="password",
-                                  value=ss.get("bf_token", ""))
-            c1, c2 = st.columns(2)
-            hours = c1.slider("Hours ahead", 1, 72, 24)
-            inplay = c2.checkbox("Include in-play markets", value=False)
-            go_btn = st.form_submit_button("Fetch tennis markets", type="primary")
-        st.caption("Credentials stay in this session only. For a permanent setup put "
-                   "`BETFAIR_APP_KEY`, `BETFAIR_USERNAME`, `BETFAIR_PASSWORD` in "
-                   "`.streamlit/secrets.toml` or environment variables.")
-        if go_btn:
+        c1, c2, c3 = st.columns([2, 1, 2])
+        window = c1.radio("Window", ["Today (until midnight)", "Next N hours"], horizontal=True)
+        hours = c2.number_input("Hours", 1, 72, 6, disabled=window.startswith("Today"))
+        tz = c3.text_input("Your timezone", value=secret("TENNIS_TZ") or "Europe/London",
+                           help="Defines 'today'. e.g. Europe/London, Australia/Sydney, America/New_York")
+        c1, c2, c3 = st.columns([2, 1, 2])
+        auto = c1.toggle("Auto-refresh", value=True,
+                         help="Re-fetch prices and new matches while this page is open.")
+        every = c2.number_input("Every (min)", 1, 120, 5, disabled=not auto)
+        inplay = c3.checkbox("Include in-play markets", value=False)
+
+        with st.expander("Betfair login", expanded=not secret("BETFAIR_APP_KEY")):
+            with st.form("bf"):
+                c1, c2 = st.columns(2)
+                app_key = c1.text_input("App key", value=secret("BETFAIR_APP_KEY"), type="password")
+                region = c2.selectbox("Region", list(ENDPOINTS))
+                c1, c2 = st.columns(2)
+                user = c1.text_input("Username", value=secret("BETFAIR_USERNAME"))
+                pwd = c2.text_input("Password", value=secret("BETFAIR_PASSWORD"), type="password")
+                saved = st.form_submit_button("Save login for this session")
+            st.caption("Save `BETFAIR_APP_KEY`, `BETFAIR_USERNAME`, `BETFAIR_PASSWORD` in "
+                       "`.streamlit/secrets.toml` and today's games load by themselves when the app opens.")
+        if saved:
+            ss.bf_creds = {"app_key": app_key, "username": user, "password": pwd, "region": region}
+            ss.pop("bf_client", None)
+        creds = ss.get("bf_creds") or {"app_key": app_key, "username": user, "password": pwd,
+                                        "region": region}
+        ready = bool(creds["app_key"] and ((creds["username"] and creds["password"])
+                                           or ss.get("bf_client")))
+
+        now = pd.Timestamp.now(tz="UTC")
+        last = ss.get("bf_last_try")
+        stale = last is None or (auto and now - last >= pd.Timedelta(minutes=every))
+        fetch_now = st.button("🔄 Find today's games now" if window.startswith("Today")
+                              else f"🔄 Find games in the next {hours}h", type="primary")
+        if ready and (fetch_now or stale or ss.get("bf_window") != (window, hours, tz, inplay)):
+            ss.bf_last_try = now
+            ss.bf_window = (window, hours, tz, inplay)
             try:
-                client = BetfairClient(app_key=app_key, session_token=token or None, region=region)
-                if not token:
-                    ss.bf_token = client.login(user, pwd)
-                with st.spinner("Downloading markets and prices…"):
-                    sched = client.tennis_schedule(hours_ahead=hours, include_in_play=inplay)
+                client = ss.get("bf_client") or BetfairClient(app_key=creds["app_key"],
+                                                              region=creds["region"])
+                with st.spinner("Finding today's tennis on Betfair…"):
+                    sched = daily.fetch_today(
+                        client, creds["username"], creds["password"], tz=tz,
+                        include_in_play=inplay,
+                        hours_ahead=None if window.startswith("Today") else hours)
+                ss.bf_client = client
                 ss.schedule = sched
-                st.success(f"Loaded {len(sched)} open tennis match-odds markets.")
-            except (BetfairError, Exception) as e:  # noqa: BLE001
-                st.error(f"Betfair: {e}")
+                ss.bf_updated = now
+                ss.pop("bf_error", None)
+            except Exception as e:  # noqa: BLE001 - surface any login/API error
+                ss.bf_error = str(e)
+        elif not ready:
+            st.info("Enter your Betfair app key, username and password above to find today's games.")
+
+        if ss.get("bf_error"):
+            st.error(f"Betfair: {ss.bf_error}")
+        elif ss.get("bf_updated") is not None:
+            st.success(f"{len(ss.schedule)} open tennis matches · updated "
+                       f"{ss.bf_updated.tz_convert(tz):%H:%M:%S}"
+                       + (f" · refreshes every {every} min" if auto else ""))
+
+        if auto and ready:
+            @st.fragment(run_every="30s")
+            def _ticker():
+                last_try = ss.get("bf_last_try")
+                if last_try is not None and pd.Timestamp.now(tz="UTC") - last_try >= pd.Timedelta(minutes=every):
+                    st.rerun(scope="app")
+            _ticker()
 
     elif source.startswith("Upload"):
         st.write("Columns: `player1, player2, back1, back2` (required) and optionally "

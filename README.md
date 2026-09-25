@@ -21,6 +21,27 @@ Open http://localhost:8501, then:
    Download the bet slip as CSV.
 4. **📈 Backtest**: run this before betting real money. It checks whether the formula beats the market on data it hasn't seen.
 
+## Find today's games automatically
+
+1. Put your results files in the `data/` folder. They load every time the app opens.
+2. Put your Betfair login in `.streamlit/secrets.toml` (see below), plus your timezone:
+   `TENNIS_TZ = "Europe/London"`.
+3. Run `streamlit run app.py`. The app logs in, finds every tennis match from now until midnight
+   in your timezone, and shows the value bets straight away. With **Auto-refresh** on it re-checks
+   prices and new matches every few minutes while the page is open. Switch the window to
+   *Next N hours* if you only want matches starting soon.
+
+**No browser:** `daily_scan.py` does the same scan and saves a bet slip CSV to `output/`:
+
+```bash
+export BETFAIR_APP_KEY=... BETFAIR_USERNAME=... BETFAIR_PASSWORD=...
+python daily_scan.py                  # today until midnight (Europe/London)
+python daily_scan.py --hours 6 --tz Australia/Sydney --min-ev 0.04
+```
+
+To run it every morning, use cron (`0 8 * * * cd /path/to/Claude134 && python daily_scan.py`)
+or Windows Task Scheduler. `python daily_scan.py --help` lists every setting.
+
 ## Data format
 
 The [tennis-data.co.uk](http://www.tennis-data.co.uk) layout works as-is (`Date, Tournament, Surface,

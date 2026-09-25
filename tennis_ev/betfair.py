@@ -99,15 +99,17 @@ class BetfairClient:
             raise BetfairError(f"{method} HTTP {r.status_code}: {r.text[:300]}")
         return r.json()
 
-    def list_tennis_markets(self, hours_ahead: int = 24, in_play: bool = False,
-                            max_results: int = 500) -> list[dict]:
+    def list_tennis_markets(self, hours_ahead: float = 24, in_play: bool = False,
+                            max_results: int = 1000,
+                            until: dt.datetime | None = None) -> list[dict]:
         now = dt.datetime.now(dt.timezone.utc)
+        end = until.astimezone(dt.timezone.utc) if until else now + dt.timedelta(hours=hours_ahead)
         flt = {
             "eventTypeIds": [TENNIS_EVENT_TYPE],
             "marketTypeCodes": ["MATCH_ODDS"],
             "marketStartTime": {
                 "from": (now - dt.timedelta(hours=6 if in_play else 0)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "to": (now + dt.timedelta(hours=hours_ahead)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "to": end.strftime("%Y-%m-%dT%H:%M:%SZ"),
             },
         }
         if not in_play:
@@ -128,11 +130,20 @@ class BetfairClient:
             })
         return books
 
-    def tennis_schedule(self, hours_ahead: int = 24, include_in_play: bool = False) -> pd.DataFrame:
+    def tennis_schedule(self, hours_ahead: float = 24, include_in_play: bool = False,
+                        until: dt.datetime | None = None) -> pd.DataFrame:
         """Upcoming tennis matches with best back/lay prices, one row per match."""
-        catalogue = self.list_tennis_markets(hours_ahead, in_play=include_in_play)
+        catalogue = self.list_tennis_markets(hours_ahead, in_play=include_in_play, until=until)
         books = {b["marketId"]: b for b in self.list_books([m["marketId"] for m in catalogue])}
         return catalogue_to_schedule(catalogue, books, include_in_play=include_in_play)
+
+
+def end_of_day(tz_name: str = "Europe/London", now: dt.datetime | None = None) -> dt.datetime:
+    """Midnight at the end of today in the given timezone (timezone-aware)."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name)
+    local = (now or dt.datetime.now(dt.timezone.utc)).astimezone(tz)
+    return dt.datetime.combine(local.date() + dt.timedelta(days=1), dt.time(), tzinfo=tz)
 
 
 def _best(prices: list[dict]) -> tuple[float | None, float]:
