@@ -14,8 +14,8 @@ streamlit run app.py
 Open http://localhost:8501, then:
 
 1. **📂 Data**: upload your 30/90/365-day results files (CSV/Excel). Or click *Load demo data* to try it.
-2. **📅 Schedule & Odds**: enter your Betfair app key + login and click *Fetch tennis markets*
-   (or upload a schedule CSV / type matches in by hand). Check the guessed surfaces and map any
+2. **📅 Schedule & Odds**: enter your Betfair app key and login, and today's matches load by
+   themselves (or upload a schedule CSV / type matches in by hand). Check the guessed surfaces and map any
    player names that weren't matched automatically.
 3. **💰 Value Bets**: ranked bets with odds, fair odds, EV, Kelly stake and a confidence grade.
    Download the bet slip as CSV.
